@@ -28,7 +28,7 @@ type PulseaudioMQTTBridge struct {
 	PulseAudioState PAState
 }
 
-func NewPulseaudioMQTTBridge(tvIPAddress *string, mqttBroker string) *PulseaudioMQTTBridge {
+func NewPulseaudioMQTTBridge(mqttBroker string) *PulseaudioMQTTBridge {
 
 	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
 	mqttClient := mqtt.NewClient(opts)
@@ -143,6 +143,7 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 			continue
 		}
 		changeDetected := false
+
 		if info.DefaultSink != bridge.PulseAudioState.DefaultSink {
 			bridge.PulseAudioState.DefaultSink = info.DefaultSink
 			changeDetected = true
@@ -178,7 +179,6 @@ func printHelp() {
 }
 
 func main() {
-	tvIPAddress := flag.String("tv", "", "TV IP address")
 	mqttBroker := flag.String("broker", "tcp://localhost:1883", "MQTT broker URL")
 	help := flag.Bool("help", false, "Print help")
 	debug = flag.Bool("debug", false, "Debug logging")
@@ -189,7 +189,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	bridge := NewPulseaudioMQTTBridge(tvIPAddress, *mqttBroker)
+	bridge := NewPulseaudioMQTTBridge(*mqttBroker)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
