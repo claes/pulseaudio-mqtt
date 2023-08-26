@@ -28,7 +28,7 @@ type PulseaudioMQTTBridge struct {
 	PulseAudioState PAState
 }
 
-func NewPulseaudioMQTTBridge(mqttBroker string) *PulseaudioMQTTBridge {
+func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioMQTTBridge {
 
 	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
 	mqttClient := mqtt.NewClient(opts)
@@ -38,7 +38,13 @@ func NewPulseaudioMQTTBridge(mqttBroker string) *PulseaudioMQTTBridge {
 		fmt.Printf("Connected to MQTT broker: %s\n", mqttBroker)
 	}
 
-	paClient, err := pulseaudio.NewClient()
+	paClient, err := func(pulseServer string) (*pulseaudio.Client, error) {
+		if pulseServer == "" {
+			return pulseaudio.NewClient()
+		} else {
+			return pulseaudio.NewClient(pulseServer)
+		}
+	}(pulseServer)
 	if err != nil {
 		panic(err)
 	}
@@ -179,6 +185,7 @@ func printHelp() {
 }
 
 func main() {
+	pulseServer := flag.String("pulseserver", "", "Pulse server address")
 	mqttBroker := flag.String("broker", "tcp://localhost:1883", "MQTT broker URL")
 	help := flag.Bool("help", false, "Print help")
 	debug = flag.Bool("debug", false, "Debug logging")
@@ -189,7 +196,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	bridge := NewPulseaudioMQTTBridge(*mqttBroker)
+	bridge := NewPulseaudioMQTTBridge(*pulseServer, *mqttBroker)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
