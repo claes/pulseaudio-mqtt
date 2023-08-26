@@ -12,7 +12,8 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/the-jonsey/pulseaudio"
+	// "github.com/the-jonsey/pulseaudio"
+	"github.com/claes/go-pulseaudio"
 )
 
 var debug *bool
@@ -42,7 +43,7 @@ func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioM
 		if pulseServer == "" {
 			return pulseaudio.NewClient()
 		} else {
-			return pulseaudio.NewClient(pulseServer)
+			return pulseaudio.NewClientTmp(pulseServer)
 		}
 	}(pulseServer)
 	if err != nil {
