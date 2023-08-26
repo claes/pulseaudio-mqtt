@@ -43,6 +43,7 @@ func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioM
 		if pulseServer == "" {
 			return pulseaudio.NewClient()
 		} else {
+			fmt.Println("Attempting to connect using tcp")
 			return pulseaudio.NewClientTmp(pulseServer)
 		}
 	}(pulseServer)
