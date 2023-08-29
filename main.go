@@ -13,21 +13,19 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/jfreymuth/pulse/proto"
-	// "github.com/the-jonsey/pulseaudio"
 )
 
 var debug *bool
 
-type PAState struct {
+type PulseAudioState struct {
 	DefaultSink          string
 	ActiveProfilePerCard map[uint32]string
 }
 
 type PulseaudioMQTTBridge struct {
-	MQTTClient mqtt.Client
-	//	PAClient        pulseaudio.Client
-	PulseAudioState PAState
-	PulseClient     PulseClient
+	mqttClient      mqtt.Client
+	pulseClient     *PulseClient
+	pulseAudioState PulseAudioState
 	sendMutex       sync.Mutex
 }
 
@@ -46,38 +44,10 @@ func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioM
 		panic(err)
 	}
 
-	sinks, err := pulseClient.ListSinks()
-	for _, sink := range sinks {
-		fmt.Printf("Sink: %v\n", sink)
-	}
-
-	cards, err := pulseClient.ListCards()
-	for _, card := range cards {
-		fmt.Printf("Card: %v %v %s\n\n", card.info.CardIndex, card.info.CardName, card.info.ActiveProfileName)
-		for _, profile := range card.info.Profiles {
-			fmt.Printf("Profile: %v \n\n", profile)
-		}
-	}
-
-	// paClient, err := func(pulseServer string) (*pulseaudio.Client, error) {
-	// 	if pulseServer == "" {
-	// 		return pulseaudio.NewClient()
-	// 	} else {
-	// 		fmt.Println("Attempting to connect using tcp")
-	// 		return pulseaudio.NewClient()
-	// 		//return pulseaudio.NewClient(pulseServer)
-	// 	}
-	// }(pulseServer)
-
-	if err != nil {
-		panic(err)
-	}
-
 	bridge := &PulseaudioMQTTBridge{
-		MQTTClient: mqttClient,
-		// PAClient:        *paClient,
-		PulseClient:     *pulseClient,
-		PulseAudioState: PAState{"", make(map[uint32]string)},
+		mqttClient:      mqttClient,
+		pulseClient:     pulseClient,
+		pulseAudioState: PulseAudioState{"", make(map[uint32]string)},
 	}
 
 	funcs := map[string]func(client mqtt.Client, message mqtt.Message){
@@ -90,6 +60,11 @@ func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioM
 		token := mqttClient.Subscribe(key, 0, function)
 		token.Wait()
 	}
+
+	bridge.checkUpdateDefaultSink()
+	bridge.checkUpdateActiveProfile()
+	bridge.publishState()
+
 	time.Sleep(2 * time.Second)
 	return bridge
 }
@@ -101,8 +76,7 @@ func (bridge *PulseaudioMQTTBridge) onDefaultSinkSet(client mqtt.Client, message
 	defaultSink := string(message.Payload())
 	if defaultSink != "" {
 		bridge.PublishMQTT("pulseaudio/sink/default/set", "", false)
-		//bridge.PAClient.SetDefaultSink(defaultSink)
-		bridge.PulseClient.protoClient.Request(&proto.SetDefaultSink{SinkName: defaultSink}, nil)
+		bridge.pulseClient.protoClient.Request(&proto.SetDefaultSink{SinkName: defaultSink}, nil)
 	}
 }
 
@@ -146,11 +120,15 @@ func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message
 			fmt.Printf("Could not parse card '%s'\n", cardStr)
 			return
 		}
+
 		profile := string(message.Payload())
 		if profile != "" {
 			bridge.PublishMQTT("pulseaudio/cardprofile/"+cardStr+"/set", "", false)
-			//bridge.PAClient.SetCardProfile(uint32(card), profile)
-			bridge.PulseClient.protoClient.Request(&proto.SetCardProfile{CardIndex: uint32(card), ProfileName: profile}, nil)
+			err = bridge.pulseClient.protoClient.Request(&proto.SetCardProfile{CardIndex: uint32(card), ProfileName: profile}, nil)
+			if err != nil {
+				fmt.Printf("Could not set card profile, %v\n", err)
+				return
+			}
 		}
 	} else {
 		//TODO
@@ -158,157 +136,80 @@ func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message
 }
 
 func (bridge *PulseaudioMQTTBridge) PublishMQTT(topic string, message string, retained bool) {
-	token := bridge.MQTTClient.Publish(topic, 0, retained, message)
+	token := bridge.mqttClient.Publish(topic, 0, retained, message)
 	token.Wait()
 }
 
 func (bridge *PulseaudioMQTTBridge) MainLoop() {
 
-	sinkChannel := make(chan struct{}, 1)
-	cardChannel := make(chan struct{}, 1)
-
-	bridge.PulseClient.protoClient.Callback = func(msg interface{}) {
+	ch := make(chan struct{}, 1)
+	bridge.pulseClient.protoClient.Callback = func(msg interface{}) {
 		switch msg := msg.(type) {
 		case *proto.SubscribeEvent:
-			fmt.Printf("Callback event. Type: %v Facility: %v\n", msg.Event.GetType(), msg.Event.GetFacility())
-			//log.Printf("%s index=%d", msg.Event, msg.Index)
-			// if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventCard {
-			// 	select {
-			// 	case cardChannel <- struct{}{}:
-			// 	default:
-			// 	}
-			// }
-
-			// if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventSink {
-			// 	select {
-			// 	case sinkChannel <- struct{}{}:
-			// 	default:
-			// 	}
-			// }
-
 			if msg.Event.GetType() == proto.EventChange {
-				switch msg.Event.GetFacility() {
-				case proto.EventSink:
-					fmt.Println("Event sink")
-					select {
-					case sinkChannel <- struct{}{}:
-					default:
-					}
-				case proto.EventCard:
-					fmt.Println("Event card")
-					select {
-					case cardChannel <- struct{}{}:
-					default:
-					}
+				select {
+				case ch <- struct{}{}:
+				default:
 				}
 			}
-		default:
-			fmt.Printf("%#v\n", msg)
 		}
 	}
 
-	err := bridge.PulseClient.protoClient.Request(&proto.Subscribe{Mask: proto.SubscriptionMaskAll}, nil)
+	err := bridge.pulseClient.protoClient.Request(&proto.Subscribe{Mask: proto.SubscriptionMaskAll}, nil)
 	if err != nil {
 		panic(err)
 	}
 
 	go func() {
 		for {
-			<-cardChannel
-			bridge.checkUpdateActiveProfile()
+			<-ch
+			defaultSinkChanged := bridge.checkUpdateDefaultSink()
+			activeProfileChanged := bridge.checkUpdateActiveProfile()
+			if defaultSinkChanged || activeProfileChanged {
+				bridge.publishState()
+			}
 		}
 	}()
-
-	go func() {
-		for {
-			<-sinkChannel
-			bridge.checkUpdateDefaultSink()
-		}
-	}()
-
-	// updates, err := bridge.PAClient.Updates()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// for ; ; <-updates {
-	// 	info, err := bridge.PAClient.ServerInfo()
-	// 	if err != nil {
-	// 		fmt.Printf("Could not retrieve server info\n")
-	// 		continue
-	// 	}
-	// 	changeDetected := false
-
-	// 	if info.DefaultSink != bridge.PulseAudioState.DefaultSink {
-	// 		bridge.PulseAudioState.DefaultSink = info.DefaultSink
-	// 		changeDetected = true
-	// 	}
-	// 	cards, err := bridge.PAClient.Cards()
-	// 	if err != nil {
-	// 		fmt.Printf("Could not retrieve cards\n")
-	// 		continue
-	// 	}
-	// for _, card := range cards {
-	// 	value, exists := bridge.PulseAudioState.ActiveProfilePerCard[card.Index]
-	// 	if !exists || value != card.ActiveProfile.Name {
-	// 		bridge.PulseAudioState.ActiveProfilePerCard[card.Index] = card.ActiveProfile.Name
-	// 		changeDetected = true
-	// 	}
-	// 	//TODO handle removed cards?
-	// }
-	// 	if changeDetected {
-	// 		jsonState, err := json.Marshal(bridge.PulseAudioState)
-	// 		if err != nil {
-	// 			fmt.Printf("Could not serialize state %v\n", err)
-	// 			continue
-	// 		}
-	// 		bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
-	// 	}
-	// }
 }
 
-func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() {
-	sink, err := bridge.PulseClient.DefaultSink()
+func (bridge *PulseaudioMQTTBridge) publishState() {
+	jsonState, err := json.Marshal(bridge.pulseAudioState)
+	if err != nil {
+		fmt.Printf("Could not serialize state %v\n", err)
+		return
+	}
+	bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
+}
+
+func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() bool {
+	sink, err := bridge.pulseClient.DefaultSink()
 	if err != nil {
 		panic(err)
 	}
 	changeDetected := false
-	if sink.Name() != bridge.PulseAudioState.DefaultSink {
-		bridge.PulseAudioState.DefaultSink = sink.Name()
+	if sink.Name() != bridge.pulseAudioState.DefaultSink {
+		bridge.pulseAudioState.DefaultSink = sink.Name()
 		changeDetected = true
 	}
-	if changeDetected {
-		jsonState, err := json.Marshal(bridge.PulseAudioState)
-		if err != nil {
-			fmt.Printf("Could not serialize state %v\n", err)
-			return
-		}
-		bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
-	}
+	return changeDetected
 }
 
-func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() {
+func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() bool {
 	reply := proto.GetCardInfoListReply{}
-	err := bridge.PulseClient.protoClient.Request(&proto.GetCardInfoList{}, &reply)
+	err := bridge.pulseClient.protoClient.Request(&proto.GetCardInfoList{}, &reply)
 	if err != nil {
 		panic(err)
 	}
 	changeDetected := false
 	for i, cardInfo := range reply {
-		value, exists := bridge.PulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex]
+		value, exists := bridge.pulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex]
 		if !exists || value != cardInfo.ActiveProfileName {
-			fmt.Printf("Active profile name for card %d is %s\n", i, cardInfo.ActiveProfileName)
-			bridge.PulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex] = cardInfo.ActiveProfileName
+			bridge.pulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex] = cardInfo.ActiveProfileName
 			changeDetected = true
 		}
 	}
-	if changeDetected {
-		jsonState, err := json.Marshal(bridge.PulseAudioState)
-		if err != nil {
-			fmt.Printf("Could not serialize state %v\n", err)
-			return
-		}
-		bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
-	}
+	// TODO handle removed cards?
+	return changeDetected
 }
 
 func printHelp() {
@@ -337,8 +238,7 @@ func main() {
 	fmt.Printf("Started\n")
 	go bridge.MainLoop()
 	<-c
-	//bridge.PAClient.Close()
-	bridge.PulseClient.Close()
+	bridge.pulseClient.Close()
 	fmt.Printf("Shut down\n")
 
 	os.Exit(0)

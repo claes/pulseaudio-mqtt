@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path"
 	"sync"
 
 	// Note depedency on commit 75628dabd933dc15bd44e6945e5ef93723937388
-	// which is not released
+	// which is not officially released
 	"github.com/jfreymuth/pulse/proto"
 )
 
@@ -50,49 +49,6 @@ func NewPulseClient(opts ...ClientOption) (*PulseClient, error) {
 		pulseClient.connection.Close()
 		return nil, err
 	}
-
-	sinkCh := make(chan struct{}, 1)
-
-	pulseClient.protoClient.Callback = func(msg interface{}) {
-		switch msg := msg.(type) {
-		case *proto.SubscribeEvent:
-			log.Printf("%s index=%d", msg.Event, msg.Index)
-			if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventSink {
-				select {
-				case sinkCh <- struct{}{}:
-				default:
-				}
-			}
-		default:
-			fmt.Printf("%#v\n", msg)
-		}
-	}
-
-	// //repl := struct{};
-	// pulseClient.protoClient.Request(&proto.SetCardProfile{CardIndex: 1, CardName: "1", ProfileName: ""}, nil)
-	// for {
-	// 	<-sinkCh
-	// 	//repl := proto.GetSinkInfoReply{}
-	// 	repl := proto.GetCardInfoListReply{}
-	// 	//err = client.Request(&proto.GetSinkInfo{SinkIndex: proto.Undefined, SinkName: *sinkName}, &repl)
-	// 	err = pulseClient.protoClient.Request(&proto.GetCardInfoList{}, &repl)
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	// var acc int64
-	// 	// for _, vol := range repl.ChannelVolumes {
-	// 	// 	acc += int64(vol)
-	// 	// }
-	// 	// acc /= int64(len(repl.ChannelVolumes))
-	// 	// pct := float64(acc) / float64(proto.VolumeNorm) * 100.0
-	// 	// log.Printf("%s volume: %.0f%%", *sinkName, pct)
-
-	// 	for i, cardInfo := range repl {
-	// 		fmt.Printf("x %d %v %v\n", i, cardInfo.CardIndex, cardInfo.CardName)
-	// 	}
-	// 	//log.Printf("%s card info list: %v")
-	// }
-
 	return pulseClient, nil
 }
 
