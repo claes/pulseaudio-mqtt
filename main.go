@@ -164,17 +164,42 @@ func (bridge *PulseaudioMQTTBridge) PublishMQTT(topic string, message string, re
 
 func (bridge *PulseaudioMQTTBridge) MainLoop() {
 
+	sinkChannel := make(chan struct{}, 1)
 	cardChannel := make(chan struct{}, 1)
 
 	bridge.PulseClient.protoClient.Callback = func(msg interface{}) {
-		fmt.Println("2")
 		switch msg := msg.(type) {
 		case *proto.SubscribeEvent:
+			fmt.Printf("Callback event. Type: %v Facility: %v\n", msg.Event.GetType(), msg.Event.GetFacility())
 			//log.Printf("%s index=%d", msg.Event, msg.Index)
-			if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventCard {
-				select {
-				case cardChannel <- struct{}{}:
-				default:
+			// if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventCard {
+			// 	select {
+			// 	case cardChannel <- struct{}{}:
+			// 	default:
+			// 	}
+			// }
+
+			// if msg.Event.GetType() == proto.EventChange && msg.Event.GetFacility() == proto.EventSink {
+			// 	select {
+			// 	case sinkChannel <- struct{}{}:
+			// 	default:
+			// 	}
+			// }
+
+			if msg.Event.GetType() == proto.EventChange {
+				switch msg.Event.GetFacility() {
+				case proto.EventSink:
+					fmt.Println("Event sink")
+					select {
+					case sinkChannel <- struct{}{}:
+					default:
+					}
+				case proto.EventCard:
+					fmt.Println("Event card")
+					select {
+					case cardChannel <- struct{}{}:
+					default:
+					}
 				}
 			}
 		default:
@@ -190,29 +215,14 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 	go func() {
 		for {
 			<-cardChannel
-			bridge.onCardEvent()
-			// reply := proto.GetCardInfoListReply{}
-			// err := bridge.PulseClient.protoClient.Request(&proto.GetCardInfoList{}, &reply)
-			// if err != nil {
-			// 	panic(err)
-			// }
-			// changeDetected := false
-			// for i, cardInfo := range reply {
-			// 	value, exists := bridge.PulseAudioState.ActiveProfilePerCard[card.Index]
-			// 	if !exists || value != cardInfo.ActiveProfileName {
-			// 		fmt.Printf("Active profile name for card %d is %s\n", i, cardInfo.ActiveProfileName)
-			// 		bridge.PulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex] = cardInfo.ActiveProfileName
-			// 		changeDetected = true
-			// 	}
-			// }
-			// if changeDetected {
-			// 	jsonState, err := json.Marshal(bridge.PulseAudioState)
-			// 	if err != nil {
-			// 		fmt.Printf("Could not serialize state %v\n", err)
-			// 		continue
-			// 	}
-			// 	bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
-			// }
+			bridge.checkUpdateActiveProfile()
+		}
+	}()
+
+	go func() {
+		for {
+			<-sinkChannel
+			bridge.checkUpdateDefaultSink()
 		}
 	}()
 
@@ -256,7 +266,27 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 	// }
 }
 
-func (bridge *PulseaudioMQTTBridge) onCardEvent() {
+func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() {
+	sink, err := bridge.PulseClient.DefaultSink()
+	if err != nil {
+		panic(err)
+	}
+	changeDetected := false
+	if sink.Name() != bridge.PulseAudioState.DefaultSink {
+		bridge.PulseAudioState.DefaultSink = sink.Name()
+		changeDetected = true
+	}
+	if changeDetected {
+		jsonState, err := json.Marshal(bridge.PulseAudioState)
+		if err != nil {
+			fmt.Printf("Could not serialize state %v\n", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
+	}
+}
+
+func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() {
 	reply := proto.GetCardInfoListReply{}
 	err := bridge.PulseClient.protoClient.Request(&proto.GetCardInfoList{}, &reply)
 	if err != nil {
@@ -279,7 +309,6 @@ func (bridge *PulseaudioMQTTBridge) onCardEvent() {
 		}
 		bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
 	}
-
 }
 
 func printHelp() {
