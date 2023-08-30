@@ -44,7 +44,7 @@
         # remeber to bump this hash when your dependencies change.
         #vendorSha256 = pkgs.lib.fakeSha256;
 
-        vendorSha256 = "sha256-x1YP5KuY2VWya6X204cEYAgKJDlhs657tRhQkyvPQk8=";
+        vendorSha256 = "sha256-OpMn7JPp7FnpmZbnDE95TG6IxApzD/XWz+H5JD3BbOI=";
       };
     });
 
