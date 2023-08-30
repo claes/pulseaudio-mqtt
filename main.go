@@ -53,8 +53,8 @@ func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioM
 	funcs := map[string]func(client mqtt.Client, message mqtt.Message){
 		"pulseaudio/sink/default/set":  bridge.onDefaultSinkSet,
 		"pulseaudio/cardprofile/+/set": bridge.onCardProfileSet,
-		// "pulseaudio/mute/set":          bridge.onMuteSet,
-		// "pulseaudio/volume/set":        bridge.onVolumeSet,
+		"pulseaudio/mute/set":          bridge.onMuteSet,
+		"pulseaudio/volume/set":        bridge.onVolumeSet,
 	}
 	for key, function := range funcs {
 		token := mqttClient.Subscribe(key, 0, function)
@@ -80,32 +80,48 @@ func (bridge *PulseaudioMQTTBridge) onDefaultSinkSet(client mqtt.Client, message
 	}
 }
 
-// Missing ability to read these, so disabled for now
-// func (bridge *PulseaudioMQTTBridge) onMuteSet(client mqtt.Client, message mqtt.Message) {
-// 	sendMutex.Lock()
-// 	defer sendMutex.Unlock()
+func (bridge *PulseaudioMQTTBridge) onMuteSet(client mqtt.Client, message mqtt.Message) {
+	bridge.sendMutex.Lock()
+	defer bridge.sendMutex.Unlock()
 
-// 	mute, err := strconv.ParseBool(string(message.Payload()))
-// 	if err != nil {
-// 		fmt.Printf("Could not parse '%s' as bool\n", string(message.Payload()))
-// 		return
-// 	}
-// 	bridge.PublishMQTT("pulseaudio/mute/set", "", false)
-// 	bridge.PAClient.SetMute(mute)
-// }
+	mute, err := strconv.ParseBool(string(message.Payload()))
+	if err != nil {
+		fmt.Printf("Could not parse '%s' as bool\n", string(message.Payload()))
+		return
+	}
+	bridge.PublishMQTT("pulseaudio/mute/set", "", false)
+	sink, err := bridge.pulseClient.DefaultSink()
+	if err != nil {
+		panic(err)
+	}
+	err = bridge.pulseClient.protoClient.Request(&proto.SetSinkMute{SinkIndex: sink.SinkIndex(), Mute: mute}, nil)
 
-// func (bridge *PulseaudioMQTTBridge) onVolumeSet(client mqtt.Client, message mqtt.Message) {
-// 	sendMutex.Lock()
-// 	defer sendMutex.Unlock()
+}
 
-// 	volume, err := strconv.ParseFloat(string(message.Payload()))
-// 	if err != nil {
-// 		fmt.Printf("Could not parse '%s' as float\n", string(message.Payload()))
-// 		return
-// 	}
-// 	bridge.PublishMQTT("pulseaudio/volume/set", "", false)
-// 	bridge.PAClient.SetVolume(float32(volume))
-// }
+// See https://github.com/jfreymuth/pulse/pull/8/files
+func (bridge *PulseaudioMQTTBridge) onVolumeSet(client mqtt.Client, message mqtt.Message) {
+	bridge.sendMutex.Lock()
+	defer bridge.sendMutex.Unlock()
+
+	volume, err := strconv.ParseFloat(string(message.Payload()), 32)
+	if err != nil {
+		fmt.Printf("Could not parse '%s' as float\n", string(message.Payload()))
+		return
+	}
+	bridge.PublishMQTT("pulseaudio/volume/set", "", false)
+
+	sink, err := bridge.pulseClient.DefaultSink()
+	if err != nil {
+		panic(err)
+	}
+
+	err = bridge.pulseClient.SetSinkVolume(sink, float32(volume))
+	if err != nil {
+		fmt.Printf("Could not set card profile, %v\n", err)
+		return
+	}
+
+}
 
 func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message mqtt.Message) {
 	bridge.sendMutex.Lock()
@@ -201,7 +217,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() bool {
 		panic(err)
 	}
 	changeDetected := false
-	for i, cardInfo := range reply {
+	for _, cardInfo := range reply {
 		value, exists := bridge.pulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex]
 		if !exists || value != cardInfo.ActiveProfileName {
 			bridge.pulseAudioState.ActiveProfilePerCard[cardInfo.CardIndex] = cardInfo.ActiveProfileName

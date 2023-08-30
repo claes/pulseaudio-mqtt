@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -234,6 +235,55 @@ func (c *PulseClient) ListCards() ([]*Card, error) {
 	return cards, nil
 }
 
+const volumeHundredPercent = 65536
+
+func ratioToVolume(r float32) (uint32, error) {
+	vf := r * volumeHundredPercent
+	if vf < 0 || vf > 0xFFFFFFFF {
+		return 0, errors.New("volume out of range")
+	}
+	return uint32(vf), nil
+}
+
+// SetSinkVolume sets volume of the chnnels.
+// 1.0 means maximum volume and the sink may support software boosted value larger than 1.0.
+// Number of the arguments should be matched to the number of the channels.
+// If only one argument is given, volume of all channels will be set to it.
+func (c *PulseClient) SetSinkVolume(s *Sink, volume ...float32) error {
+	var cvol proto.ChannelVolumes
+	switch len(volume) {
+	case 1:
+		v, err := ratioToVolume(volume[0])
+		if err != nil {
+			return err
+		}
+		for range s.info.ChannelVolumes {
+			cvol = append(cvol, v)
+		}
+	case len(s.info.ChannelVolumes):
+		for _, vRatio := range volume {
+			v, err := ratioToVolume(vRatio)
+			if err != nil {
+				return err
+			}
+			cvol = append(cvol, v)
+		}
+	default:
+		return errors.New("invalid volume length")
+	}
+	return c.protoClient.Request(&proto.SetSinkVolume{
+		SinkIndex:      s.info.SinkIndex,
+		ChannelVolumes: cvol,
+	}, &SetSinkVolumeReply{})
+}
+
 type SetCardProfile struct{}
 
 func (*SetCardProfile) command() uint32 { return proto.OpSetCardProfile }
+
+type SetSinkVolumeReply struct{}
+
+type SetSourceVolumeReply struct{}
+
+func (*SetSinkVolumeReply) IsReplyTo() uint32   { return proto.OpSetSinkVolume }
+func (*SetSourceVolumeReply) IsReplyTo() uint32 { return proto.OpSetSourceVolume }
