@@ -2,7 +2,7 @@
   description = "Pulseaudio-MQTT";
 
   # Nixpkgs / NixOS version to use.
-  inputs.nixpkgs.url = "nixpkgs/nixos-23.05";
+  inputs.nixpkgs.url = "nixpkgs/nixos-23.11";
 
   outputs = {
     self,
