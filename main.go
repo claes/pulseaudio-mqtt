@@ -37,7 +37,7 @@ func main() {
 	fmt.Printf("Started\n")
 	go bridge.MainLoop()
 	<-c
-	bridge.pulseClient.Close()
+	bridge.PulseClient.Close()
 	fmt.Printf("Shut down\n")
 
 	os.Exit(0)
