@@ -29,7 +29,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	bridge := lib.NewPulseaudioMQTTBridge(*pulseServer, *mqttBroker)
+	bridge := lib.NewPulseaudioMQTTBridge(
+		lib.CreatePulseClient(*pulseServer), lib.CreateMQTTClient(*mqttBroker))
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)

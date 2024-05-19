@@ -25,22 +25,28 @@ type PulseaudioMQTTBridge struct {
 	sendMutex       sync.Mutex
 }
 
-func NewPulseaudioMQTTBridge(pulseServer string, mqttBroker string) *PulseaudioMQTTBridge {
-
-	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
-	mqttClient := mqtt.NewClient(opts)
-	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
-		slog.Error("Error while initializing mqtt", "mqttBroker", mqttBroker)
-		os.Exit(1)
-	} else {
-		slog.Info("Connected to MQTT broker", "mqttBroker", mqttBroker)
-	}
-
+func CreatePulseClient(pulseServer string) *PulseClient {
 	pulseClient, err := NewPulseClient(ClientServerString(pulseServer))
 	if err != nil {
 		slog.Error("Error while initializing pulseclient", "pulseServer", pulseServer)
 		os.Exit(1)
 	}
+	return pulseClient
+}
+
+func CreateMQTTClient(mqttBroker string) mqtt.Client {
+	slog.Info("Creating MQTT client", "broker", mqttBroker)
+	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
+	client := mqtt.NewClient(opts)
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		slog.Error("Could not connect to broker", "mqttBroker", mqttBroker, "error", token.Error())
+		panic(token.Error())
+	}
+	slog.Info("Connected to MQTT broker", "mqttBroker", mqttBroker)
+	return client
+}
+
+func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client) *PulseaudioMQTTBridge {
 
 	bridge := &PulseaudioMQTTBridge{
 		MqttClient:      mqttClient,
