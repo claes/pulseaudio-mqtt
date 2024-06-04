@@ -120,7 +120,7 @@ func (bridge *PulseaudioMQTTBridge) onVolumeSet(client mqtt.Client, message mqtt
 	sink, err := bridge.PulseClient.DefaultSink()
 	if err != nil {
 		slog.Error("Could not retrieve default sink", "error", err)
-		panic(err)
+		return
 	}
 
 	err = bridge.PulseClient.SetSinkVolume(sink, float32(volume))
