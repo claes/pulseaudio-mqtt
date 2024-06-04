@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -29,8 +30,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	bridge := lib.NewPulseaudioMQTTBridge(
-		lib.CreatePulseClient(*pulseServer), lib.CreateMQTTClient(*mqttBroker))
+	pulseClient, err := lib.CreatePulseClient(*pulseServer)
+	if err != nil {
+		slog.Error("Error creating pulse client", "error", err, "pulseServer", *pulseServer)
+	}
+
+	mqttClient, err := lib.CreateMQTTClient(*mqttBroker)
+	if err != nil {
+		slog.Error("Error creating mqtt client", "error", err, "broker", *mqttBroker)
+	}
+	bridge := lib.NewPulseaudioMQTTBridge(pulseClient, mqttClient)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)

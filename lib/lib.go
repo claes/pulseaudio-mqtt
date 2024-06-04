@@ -3,7 +3,6 @@ package lib
 import (
 	"encoding/json"
 	"log/slog"
-	"os"
 	"regexp"
 	"strconv"
 	"sync"
@@ -25,25 +24,28 @@ type PulseaudioMQTTBridge struct {
 	sendMutex       sync.Mutex
 }
 
-func CreatePulseClient(pulseServer string) *PulseClient {
+func CreatePulseClient(pulseServer string) (*PulseClient, error) {
 	pulseClient, err := NewPulseClient(ClientServerString(pulseServer))
 	if err != nil {
 		slog.Error("Error while initializing pulseclient", "pulseServer", pulseServer)
-		os.Exit(1)
+		return nil, err
+	} else {
+		slog.Info("Initialized pulseclient", "pulseServer", pulseServer)
 	}
-	return pulseClient
+
+	return pulseClient, nil
 }
 
-func CreateMQTTClient(mqttBroker string) mqtt.Client {
+func CreateMQTTClient(mqttBroker string) (mqtt.Client, error) {
 	slog.Info("Creating MQTT client", "broker", mqttBroker)
 	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
 		slog.Error("Could not connect to broker", "mqttBroker", mqttBroker, "error", token.Error())
-		panic(token.Error())
+		return nil, token.Error()
 	}
 	slog.Info("Connected to MQTT broker", "mqttBroker", mqttBroker)
-	return client
+	return client, nil
 }
 
 func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client) *PulseaudioMQTTBridge {
@@ -91,16 +93,16 @@ func (bridge *PulseaudioMQTTBridge) onMuteSet(client mqtt.Client, message mqtt.M
 	mute, err := strconv.ParseBool(string(message.Payload()))
 	if err != nil {
 		slog.Error("Could not parse bool", "messagePayload", message.Payload())
-		return
 	}
 	bridge.PublishMQTT("pulseaudio/mute/set", "", false)
 	sink, err := bridge.PulseClient.DefaultSink()
 	if err != nil {
 		slog.Error("Could not retrieve default sink", "error", err)
-		os.Exit(1)
 	}
 	err = bridge.PulseClient.protoClient.Request(&proto.SetSinkMute{SinkIndex: sink.SinkIndex(), Mute: mute}, nil)
-
+	if err != nil {
+		slog.Error("Could not mute sink", "error", err, "mute", mute, "sink", sink.info.SinkIndex)
+	}
 }
 
 // See https://github.com/jfreymuth/pulse/pull/8/files
@@ -179,15 +181,27 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 
 	err := bridge.PulseClient.protoClient.Request(&proto.Subscribe{Mask: proto.SubscriptionMaskAll}, nil)
 	if err != nil {
-		panic(err)
+		slog.Error("Failed pulseclient subscription", "error", err)
+		return
 	}
 
 	go func() {
 		for {
 			<-ch
-			defaultSinkChanged := bridge.checkUpdateDefaultSink()
-			activeProfileChanged := bridge.checkUpdateActiveProfile()
+			defaultSinkChanged, err := bridge.checkUpdateDefaultSink()
+			if err != nil {
+				slog.Error("Error when checking update of default sink", "error", err)
+				continue
+			}
+			activeProfileChanged, err := bridge.checkUpdateActiveProfile()
+			if err != nil {
+				slog.Error("Error when checking update of active profile", "error", err)
+				continue
+			}
 			if defaultSinkChanged || activeProfileChanged {
+				slog.Debug("State change detected",
+					"defaultSinkChanged", defaultSinkChanged,
+					"activeProfileChanged", activeProfileChanged)
 				bridge.publishState()
 			}
 		}
@@ -203,26 +217,26 @@ func (bridge *PulseaudioMQTTBridge) publishState() {
 	bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
 }
 
-func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() bool {
+func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 	sink, err := bridge.PulseClient.DefaultSink()
 	if err != nil {
 		slog.Error("Could not retrieve default sink", "error", err)
-		os.Exit(1)
+		return false, err
 	}
 	changeDetected := false
 	if sink.Name() != bridge.PulseAudioState.DefaultSink {
 		bridge.PulseAudioState.DefaultSink = sink.Name()
 		changeDetected = true
 	}
-	return changeDetected
+	return changeDetected, nil
 }
 
-func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() bool {
+func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() (bool, error) {
 	reply := proto.GetCardInfoListReply{}
 	err := bridge.PulseClient.protoClient.Request(&proto.GetCardInfoList{}, &reply)
 	if err != nil {
 		slog.Error("Could not retrieve card list", "error", err)
-		os.Exit(1)
+		return false, err
 	}
 	changeDetected := false
 	for _, cardInfo := range reply {
@@ -233,5 +247,5 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() bool {
 		}
 	}
 	// TODO handle removed cards?
-	return changeDetected
+	return changeDetected, nil
 }
