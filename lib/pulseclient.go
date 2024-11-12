@@ -136,6 +136,14 @@ func (s *Sink) Name() string {
 	return s.info.Device
 }
 
+func (s *Sink) State() uint32 {
+	return s.info.State
+}
+
+func (s *Sink) Mute() bool {
+	return s.info.Mute
+}
+
 // Channels returns the default channel map.
 func (s *Sink) Channels() proto.ChannelMap {
 	return s.info.ChannelMap
@@ -199,6 +207,14 @@ func (s *Source) ID() string {
 // Name is a human-readable name describing the source.
 func (s *Source) Name() string {
 	return s.info.Device
+}
+
+func (s *Source) State() uint32 {
+	return s.info.State
+}
+
+func (s *Source) Mute() bool {
+	return s.info.Mute
 }
 
 // Channels returns the default channel map.

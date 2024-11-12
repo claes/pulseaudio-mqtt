@@ -22,13 +22,17 @@ type PulseAudioState struct {
 }
 
 type PulseAudioSink struct {
-	Name string
-	Id   string
+	Name  string
+	Id    string
+	State uint32
+	Mute  bool
 }
 
 type PulseAudioSource struct {
-	Name string
-	Id   string
+	Name  string
+	Id    string
+	State uint32
+	Mute  bool
 }
 
 type PulseAudioCard struct {
@@ -178,7 +182,6 @@ func (bridge *PulseaudioMQTTBridge) onVolumeSet(client mqtt.Client, message mqtt
 		slog.Error("Could not set card profile", "error", err)
 		return
 	}
-
 }
 
 func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message mqtt.Message) {
@@ -283,7 +286,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateSources() (bool, error) {
 	changeDetected := false
 	var s []PulseAudioSource
 	for _, source := range sources {
-		s = append(s, PulseAudioSource{source.Name(), source.ID()})
+		s = append(s, PulseAudioSource{source.Name(), source.ID(), source.State(), source.Mute()})
 	}
 	if len(s) != len(bridge.PulseAudioState.Sources) {
 		changeDetected = true
@@ -308,7 +311,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateSinks() (bool, error) {
 	changeDetected := false
 	var s []PulseAudioSink
 	for _, sink := range sinks {
-		s = append(s, PulseAudioSink{sink.Name(), sink.ID()})
+		s = append(s, PulseAudioSink{sink.Name(), sink.ID(), sink.State(), sink.Mute()})
 	}
 
 	if len(s) != len(bridge.PulseAudioState.Sinks) {
@@ -335,6 +338,8 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSource() (bool, error) {
 	if source.ID() != bridge.PulseAudioState.DefaultSource.Id {
 		bridge.PulseAudioState.DefaultSource.Name = source.Name()
 		bridge.PulseAudioState.DefaultSource.Id = source.ID()
+		bridge.PulseAudioState.DefaultSource.State = source.State()
+		bridge.PulseAudioState.DefaultSource.Mute = source.Mute()
 		changeDetected = true
 	}
 	return changeDetected, nil
@@ -350,6 +355,8 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 	if sink.ID() != bridge.PulseAudioState.DefaultSink.Id {
 		bridge.PulseAudioState.DefaultSink.Name = sink.Name()
 		bridge.PulseAudioState.DefaultSink.Id = sink.ID()
+		bridge.PulseAudioState.DefaultSink.State = sink.State()
+		bridge.PulseAudioState.DefaultSink.Mute = sink.Mute()
 		changeDetected = true
 	}
 	return changeDetected, nil
