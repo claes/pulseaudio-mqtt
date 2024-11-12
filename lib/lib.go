@@ -256,12 +256,27 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 				slog.Error("Error when checking update of active profile", "error", err)
 				continue
 			}
+			sinksChanged, err := bridge.checkUpdateSinks()
+			if err != nil {
+				slog.Error("Error when checking update of sinks", "error", err)
+				continue
+			}
+			sourcesChanged, err := bridge.checkUpdateSources()
+			if err != nil {
+				slog.Error("Error when checking update of sources", "error", err)
+				continue
+			}
+
 			//check update list of sinks or list of sources
-			if defaultSinkChanged || activeProfileChanged || defaultSourceChanged {
+			if defaultSinkChanged || activeProfileChanged || defaultSourceChanged || sinksChanged || sourcesChanged {
+
 				slog.Debug("State change detected",
 					"defaultSinkChanged", defaultSinkChanged,
 					"defaultSourceChanged", defaultSourceChanged,
-					"activeProfileChanged", activeProfileChanged)
+					"activeProfileChanged", activeProfileChanged,
+					"sinksChanged", sinksChanged,
+					"sourcesChanged", sourcesChanged)
+
 				bridge.publishState()
 			}
 		}
@@ -361,6 +376,29 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 	}
 	return changeDetected, nil
 }
+
+// func (bridge *PulseaudioMQTTBridge) checkUpdateSinksNew() (bool, error) {
+// 	reply := proto.GetSinkInfoListReply{}
+// 	err := bridge.PulseClient.protoClient.Request(&proto.GetSinkInfoList{}, &reply)
+// 	if err != nil {
+// 		slog.Error("Could not retrieve sink list", "error", err)
+// 		return false, err
+// 	}
+
+// 	changeDetected := false
+// 	sinks := make([]PulseAudioSink, 0)
+// 	for _, sinkInfo := range reply {
+
+// 		sink := PulseAudioSink{}
+// 		sink.Name = sinkInfo.Device
+// 		sink.Id = sinkInfo.SinkName
+// 		sink.State = sinkInfo.State
+// 		sink.Mute = sinkInfo.Mute
+// 		sinks = append(sinks, sink)
+// 	}
+// 	bridge.PulseAudioState.Sinks = sinks
+// 	return changeDetected, nil
+// }
 
 func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() (bool, error) {
 	reply := proto.GetCardInfoListReply{}
