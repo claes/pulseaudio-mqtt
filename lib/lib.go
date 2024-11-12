@@ -349,12 +349,11 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSource() (bool, error) {
 		slog.Error("Could not retrieve default source", "error", err)
 		return false, err
 	}
+
+	defaultSource := PulseAudioSource{source.Name(), source.ID(), source.State(), source.Mute()}
 	changeDetected := false
-	if source.ID() != bridge.PulseAudioState.DefaultSource.Id {
-		bridge.PulseAudioState.DefaultSource.Name = source.Name()
-		bridge.PulseAudioState.DefaultSource.Id = source.ID()
-		bridge.PulseAudioState.DefaultSource.State = source.State()
-		bridge.PulseAudioState.DefaultSource.Mute = source.Mute()
+	if defaultSource != bridge.PulseAudioState.DefaultSource {
+		bridge.PulseAudioState.DefaultSource = defaultSource
 		changeDetected = true
 	}
 	return changeDetected, nil
@@ -366,12 +365,12 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 		slog.Error("Could not retrieve default sink", "error", err)
 		return false, err
 	}
+
+	defaultSink := PulseAudioSink{sink.Name(), sink.ID(), sink.State(), sink.Mute()}
+
 	changeDetected := false
-	if sink.ID() != bridge.PulseAudioState.DefaultSink.Id {
-		bridge.PulseAudioState.DefaultSink.Name = sink.Name()
-		bridge.PulseAudioState.DefaultSink.Id = sink.ID()
-		bridge.PulseAudioState.DefaultSink.State = sink.State()
-		bridge.PulseAudioState.DefaultSink.Mute = sink.Mute()
+	if defaultSink != bridge.PulseAudioState.DefaultSink {
+		bridge.PulseAudioState.DefaultSink = defaultSink
 		changeDetected = true
 	}
 	return changeDetected, nil
