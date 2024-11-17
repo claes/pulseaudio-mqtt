@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,7 +105,7 @@ func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client, t
 		"pulseaudio/initialize":        bridge.onInitialize,
 	}
 	for key, function := range funcs {
-		token := mqttClient.Subscribe(bridge.TopicPrefix+"/"+key, 0, function)
+		token := mqttClient.Subscribe(prefixify(topicPrefix, key), 0, function)
 		token.Wait()
 	}
 
@@ -112,6 +113,14 @@ func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client, t
 
 	time.Sleep(2 * time.Second)
 	return bridge
+}
+
+func prefixify(topicPrefix, subtopic string) string {
+	if len(strings.TrimSpace(topicPrefix)) > 0 {
+		return topicPrefix + "/" + subtopic
+	} else {
+		return subtopic
+	}
 }
 
 func (bridge *PulseaudioMQTTBridge) onInitialize(client mqtt.Client, message mqtt.Message) {
@@ -215,7 +224,7 @@ func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message
 }
 
 func (bridge *PulseaudioMQTTBridge) PublishMQTT(subtopic string, message string, retained bool) {
-	token := bridge.MqttClient.Publish(bridge.TopicPrefix+"/"+subtopic, 0, retained, message)
+	token := bridge.MqttClient.Publish(prefixify(bridge.TopicPrefix, subtopic), 0, retained, message)
 	token.Wait()
 }
 
