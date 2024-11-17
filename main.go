@@ -20,6 +20,7 @@ func printHelp() {
 
 func main() {
 	pulseServer := flag.String("pulseserver", "", "Pulse server address")
+	topicPrefix := flag.String("topicPrefix", "", "MQTT topic prefix to use")
 	mqttBroker := flag.String("broker", "tcp://localhost:1883", "MQTT broker URL")
 	help := flag.Bool("help", false, "Print help")
 	debug = flag.Bool("debug", false, "Debug logging")
@@ -41,7 +42,7 @@ func main() {
 		slog.Error("Error creating mqtt client", "error", err, "broker", *mqttBroker)
 		os.Exit(1)
 	}
-	bridge := lib.NewPulseaudioMQTTBridge(pulseClient, mqttClient)
+	bridge := lib.NewPulseaudioMQTTBridge(pulseClient, mqttClient, *topicPrefix)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)

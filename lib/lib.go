@@ -58,6 +58,7 @@ type PulseaudioMQTTBridge struct {
 	MqttClient      mqtt.Client
 	PulseClient     *PulseClient
 	PulseAudioState PulseAudioState
+	TopicPrefix     string
 	sendMutex       sync.Mutex
 }
 
@@ -85,11 +86,12 @@ func CreateMQTTClient(mqttBroker string) (mqtt.Client, error) {
 	return client, nil
 }
 
-func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client) *PulseaudioMQTTBridge {
+func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client, topicPrefix string) *PulseaudioMQTTBridge {
 
 	bridge := &PulseaudioMQTTBridge{
 		MqttClient:  mqttClient,
 		PulseClient: pulseClient,
+		TopicPrefix: topicPrefix,
 		PulseAudioState: PulseAudioState{PulseAudioSink{}, PulseAudioSource{}, []PulseAudioSink{}, []PulseAudioSource{},
 			[]PulseAudioCard{}, make(map[uint32]string)},
 	}
@@ -102,7 +104,7 @@ func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client) *
 		"pulseaudio/initialize":        bridge.onInitialize,
 	}
 	for key, function := range funcs {
-		token := mqttClient.Subscribe(key, 0, function)
+		token := mqttClient.Subscribe(bridge.TopicPrefix+"/"+key, 0, function)
 		token.Wait()
 	}
 
@@ -212,8 +214,8 @@ func (bridge *PulseaudioMQTTBridge) onCardProfileSet(client mqtt.Client, message
 	}
 }
 
-func (bridge *PulseaudioMQTTBridge) PublishMQTT(topic string, message string, retained bool) {
-	token := bridge.MqttClient.Publish(topic, 0, retained, message)
+func (bridge *PulseaudioMQTTBridge) PublishMQTT(subtopic string, message string, retained bool) {
+	token := bridge.MqttClient.Publish(bridge.TopicPrefix+"/"+subtopic, 0, retained, message)
 	token.Wait()
 }
 
@@ -367,7 +369,6 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 	}
 
 	defaultSink := PulseAudioSink{sink.Name(), sink.ID(), sink.State(), sink.Mute()}
-
 	changeDetected := false
 	if defaultSink != bridge.PulseAudioState.DefaultSink {
 		bridge.PulseAudioState.DefaultSink = defaultSink
