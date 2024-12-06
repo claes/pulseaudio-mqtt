@@ -92,6 +92,14 @@ type Sink struct {
 	info proto.GetSinkInfoReply
 }
 
+type Client struct {
+	info proto.GetClientInfoReply
+}
+
+type SinkInput struct {
+	info proto.GetSinkInputInfoReply
+}
+
 // ListSinks returns a list of all available output devices.
 func (c *PulseClient) ListSinks() ([]*Sink, error) {
 	var reply proto.GetSinkInfoListReply
@@ -104,6 +112,32 @@ func (c *PulseClient) ListSinks() ([]*Sink, error) {
 		sinks[i] = &Sink{info: *reply[i]}
 	}
 	return sinks, nil
+}
+
+func (c *PulseClient) ListSinkInputs() ([]*SinkInput, error) {
+	var reply proto.GetSinkInputInfoListReply
+	err := c.protoClient.Request(&proto.GetSinkInputInfoList{}, &reply)
+	if err != nil {
+		return nil, err
+	}
+	sinkInputs := make([]*SinkInput, len(reply))
+	for i := range sinkInputs {
+		sinkInputs[i] = &SinkInput{info: *reply[i]}
+	}
+	return sinkInputs, nil
+}
+
+func (c *PulseClient) ListClients() ([]*Client, error) {
+	var reply proto.GetClientInfoListReply
+	err := c.protoClient.Request(&proto.GetClientInfoList{}, &reply)
+	if err != nil {
+		return nil, err
+	}
+	clients := make([]*Client, len(reply))
+	for i := range clients {
+		clients[i] = &Client{info: *reply[i]}
+	}
+	return clients, nil
 }
 
 // DefaultSink returns the default output device.

@@ -17,16 +17,33 @@ type PulseAudioState struct {
 	DefaultSink          PulseAudioSink
 	DefaultSource        PulseAudioSource
 	Sinks                []PulseAudioSink
+	SinkInputs           []PulseAudioSinkInput
+	Clients              []PulseAudioClient
 	Sources              []PulseAudioSource
 	Cards                []PulseAudioCard
 	ActiveProfilePerCard map[uint32]string
 }
 
 type PulseAudioSink struct {
-	Name  string
-	Id    string
-	State uint32
-	Mute  bool
+	Name      string
+	Id        string
+	SinkIndex uint32
+	State     uint32
+	Mute      bool
+}
+
+type PulseAudioSinkInput struct {
+	MediaName      string
+	SinkInputIndex uint32
+	ClientIndex    uint32
+	SinkIndex      uint32
+	Properties     map[string]string
+}
+
+type PulseAudioClient struct {
+	ClientIndex uint32
+	Application string
+	Properties  map[string]string
 }
 
 type PulseAudioSource struct {
@@ -63,6 +80,12 @@ type PulseaudioMQTTBridge struct {
 	sendMutex       sync.Mutex
 }
 
+type SinkInputReq struct {
+	Command        string
+	SinkInputIndex uint32
+	SinkName       string
+}
+
 func CreatePulseClient(pulseServer string) (*PulseClient, error) {
 	pulseClient, err := NewPulseClient(ClientServerString(pulseServer))
 	if err != nil {
@@ -71,7 +94,6 @@ func CreatePulseClient(pulseServer string) (*PulseClient, error) {
 	} else {
 		slog.Info("Initialized pulseclient", "pulseServer", pulseServer)
 	}
-
 	return pulseClient, nil
 }
 
@@ -93,8 +115,15 @@ func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client, t
 		MqttClient:  mqttClient,
 		PulseClient: pulseClient,
 		TopicPrefix: topicPrefix,
-		PulseAudioState: PulseAudioState{PulseAudioSink{}, PulseAudioSource{}, []PulseAudioSink{}, []PulseAudioSource{},
-			[]PulseAudioCard{}, make(map[uint32]string)},
+		PulseAudioState: PulseAudioState{
+			PulseAudioSink{},
+			PulseAudioSource{},
+			[]PulseAudioSink{},
+			[]PulseAudioSinkInput{},
+			[]PulseAudioClient{},
+			[]PulseAudioSource{},
+			[]PulseAudioCard{},
+			make(map[uint32]string)},
 	}
 
 	funcs := map[string]func(client mqtt.Client, message mqtt.Message){
@@ -103,6 +132,7 @@ func NewPulseaudioMQTTBridge(pulseClient *PulseClient, mqttClient mqtt.Client, t
 		"pulseaudio/mute/set":          bridge.onMuteSet,
 		"pulseaudio/volume/set":        bridge.onVolumeSet,
 		"pulseaudio/initialize":        bridge.onInitialize,
+		"pulseaudio/sinkinput/req":     bridge.onSinkInputReq,
 	}
 	for key, function := range funcs {
 		token := mqttClient.Subscribe(prefixify(topicPrefix, key), 0, function)
@@ -134,6 +164,8 @@ func (bridge *PulseaudioMQTTBridge) onInitialize(client mqtt.Client, message mqt
 func (bridge *PulseaudioMQTTBridge) initialize() {
 	bridge.checkUpdateSources()
 	bridge.checkUpdateSinks()
+	bridge.checkUpdateSinkInputs()
+	bridge.checkUpdateClients()
 	bridge.checkUpdateDefaultSink()
 	bridge.checkUpdateDefaultSource()
 	bridge.checkUpdateActiveProfile()
@@ -148,6 +180,34 @@ func (bridge *PulseaudioMQTTBridge) onDefaultSinkSet(client mqtt.Client, message
 	if defaultSink != "" {
 		bridge.PublishMQTT("pulseaudio/sink/default/set", "", false)
 		bridge.PulseClient.protoClient.Request(&proto.SetDefaultSink{SinkName: defaultSink}, nil)
+	}
+}
+
+func (bridge *PulseaudioMQTTBridge) onSinkInputReq(client mqtt.Client, message mqtt.Message) {
+	bridge.sendMutex.Lock()
+	defer bridge.sendMutex.Unlock()
+
+	if len(message.Payload()) > 0 {
+		var sinkInputReq SinkInputReq
+		err := json.Unmarshal(message.Payload(), &sinkInputReq)
+		if err != nil {
+			slog.Error("Error unmarshaling sink input command", "error", err, "payload", string(message.Payload()))
+			return
+		}
+
+		if strings.EqualFold(sinkInputReq.Command, "movesink") {
+			sinkName := string(message.Payload())
+			if sinkName != "" {
+				bridge.PublishMQTT("pulseaudio/sinkinput/req", "", false)
+				err := bridge.PulseClient.protoClient.Request(&proto.MoveSinkInput{
+					SinkInputIndex: sinkInputReq.SinkInputIndex, DeviceIndex: proto.Undefined, DeviceName: sinkInputReq.SinkName}, nil)
+
+				if err != nil {
+					slog.Error("Could not set card profile", "error", err)
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -272,6 +332,16 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 				slog.Error("Error when checking update of sinks", "error", err)
 				continue
 			}
+			sinkInputsChanged, err := bridge.checkUpdateSinkInputs()
+			if err != nil {
+				slog.Error("Error when checking update of sink inputs", "error", err)
+				continue
+			}
+			clientsChanged, err := bridge.checkUpdateClients()
+			if err != nil {
+				slog.Error("Error when checking update of sink inputs", "error", err)
+				continue
+			}
 			sourcesChanged, err := bridge.checkUpdateSources()
 			if err != nil {
 				slog.Error("Error when checking update of sources", "error", err)
@@ -279,7 +349,8 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 			}
 
 			//check update list of sinks or list of sources
-			if defaultSinkChanged || activeProfileChanged || defaultSourceChanged || sinksChanged || sourcesChanged {
+			if defaultSinkChanged || activeProfileChanged || defaultSourceChanged ||
+				sinksChanged || sinkInputsChanged || clientsChanged || sourcesChanged {
 
 				slog.Debug("State change detected",
 					"defaultSinkChanged", defaultSinkChanged,
@@ -301,6 +372,15 @@ func (bridge *PulseaudioMQTTBridge) publishState() {
 		return
 	}
 	bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
+
+	// jsonState, err = json.Marshal(bridge.PulseAudioState.Clients)
+	// bridge.PublishMQTT("pulseaudio/clients", string(jsonState), false)
+
+	// jsonState, err = json.Marshal(bridge.PulseAudioState.SinkInputs)
+	// bridge.PublishMQTT("pulseaudio/sinkinputs", string(jsonState), false)
+
+	// jsonState, err = json.Marshal(bridge.PulseAudioState.Sinks)
+	// bridge.PublishMQTT("pulseaudio/sinks", string(jsonState), false)
 }
 
 func (bridge *PulseaudioMQTTBridge) checkUpdateSources() (bool, error) {
@@ -337,7 +417,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateSinks() (bool, error) {
 	changeDetected := false
 	var s []PulseAudioSink
 	for _, sink := range sinks {
-		s = append(s, PulseAudioSink{sink.Name(), sink.ID(), sink.State(), sink.Mute()})
+		s = append(s, PulseAudioSink{sink.Name(), sink.ID(), sink.SinkIndex(), sink.State(), sink.Mute()})
 	}
 
 	if len(s) != len(bridge.PulseAudioState.Sinks) {
@@ -351,6 +431,74 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateSinks() (bool, error) {
 		}
 	}
 	bridge.PulseAudioState.Sinks = s
+	return changeDetected, nil
+}
+
+func (bridge *PulseaudioMQTTBridge) checkUpdateSinkInputs() (bool, error) {
+	sinkInputs, err := bridge.PulseClient.ListSinkInputs()
+	if err != nil {
+		slog.Error("Could not retrieve sink inputs", "error", err)
+		return false, err
+	}
+	changeDetected := false
+	var s []PulseAudioSinkInput
+	for _, sinkInput := range sinkInputs {
+		props := make(map[string]string)
+		for key, value := range sinkInput.info.Properties {
+			props[key] = strings.TrimRight(string(value), "\u0000")
+		}
+		s = append(s, PulseAudioSinkInput{
+			MediaName:      sinkInput.info.MediaName,
+			ClientIndex:    sinkInput.info.ClientIndex,
+			SinkInputIndex: sinkInput.info.SinkInputIndex,
+			SinkIndex:      sinkInput.info.SinkIndex,
+			Properties:     props})
+	}
+
+	if len(s) != len(bridge.PulseAudioState.SinkInputs) {
+		changeDetected = true
+	} else {
+		for i := range s {
+			if !s[i].Equals(&bridge.PulseAudioState.SinkInputs[i]) {
+				changeDetected = true
+				break
+			}
+		}
+	}
+	bridge.PulseAudioState.SinkInputs = s
+	return changeDetected, nil
+}
+
+func (bridge *PulseaudioMQTTBridge) checkUpdateClients() (bool, error) {
+	clients, err := bridge.PulseClient.ListClients()
+	if err != nil {
+		slog.Error("Could not retrieve clients", "error", err)
+		return false, err
+	}
+	changeDetected := false
+	var c []PulseAudioClient
+	for _, client := range clients {
+		props := make(map[string]string)
+		for key, value := range client.info.Properties {
+			props[key] = strings.TrimRight(string(value), "\u0000")
+		}
+		c = append(c, PulseAudioClient{
+			ClientIndex: client.info.ClientIndex,
+			Application: client.info.Application,
+			Properties:  props})
+	}
+
+	if len(c) != len(bridge.PulseAudioState.Clients) {
+		changeDetected = true
+	} else {
+		for i := range c {
+			if !c[i].Equals(&bridge.PulseAudioState.Clients[i]) {
+				changeDetected = true
+				break
+			}
+		}
+	}
+	bridge.PulseAudioState.Clients = c
 	return changeDetected, nil
 }
 
@@ -377,7 +525,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 		return false, err
 	}
 
-	defaultSink := PulseAudioSink{sink.Name(), sink.ID(), sink.State(), sink.Mute()}
+	defaultSink := PulseAudioSink{sink.Name(), sink.ID(), sink.SinkIndex(), sink.State(), sink.Mute()}
 	changeDetected := false
 	if defaultSink != bridge.PulseAudioState.DefaultSink {
 		bridge.PulseAudioState.DefaultSink = defaultSink
@@ -441,4 +589,48 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() (bool, error) {
 
 	// TODO handle removed cards?
 	return changeDetected, nil
+}
+
+func (p *PulseAudioSinkInput) Equals(other *PulseAudioSinkInput) bool {
+	if p == nil || other == nil {
+		return p == other
+	}
+	if p.MediaName != other.MediaName ||
+		p.SinkInputIndex != other.SinkInputIndex ||
+		p.ClientIndex != other.ClientIndex ||
+		p.SinkIndex != other.SinkIndex {
+		return false
+	}
+	if len(p.Properties) != len(other.Properties) {
+		return false
+	}
+	for key, value := range p.Properties {
+		if otherValue, exists := other.Properties[key]; !exists || otherValue != value {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *PulseAudioClient) Equals(other *PulseAudioClient) bool {
+	if c == nil || other == nil {
+		return c == other // Both are nil, return true; otherwise false
+	}
+
+	if c.ClientIndex != other.ClientIndex || c.Application != other.Application {
+		return false
+	}
+
+	// Compare the Properties maps
+	if len(c.Properties) != len(other.Properties) {
+		return false
+	}
+
+	for key, value := range c.Properties {
+		if otherValue, exists := other.Properties[key]; !exists || otherValue != value {
+			return false
+		}
+	}
+
+	return true
 }
