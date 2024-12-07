@@ -2,6 +2,7 @@ package lib
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -37,7 +38,9 @@ type PulseAudioSinkInput struct {
 	SinkInputIndex uint32
 	ClientIndex    uint32
 	SinkIndex      uint32
-	Properties     map[string]string
+	Mute           bool
+
+	Properties map[string]string
 }
 
 type PulseAudioClient struct {
@@ -84,6 +87,42 @@ type SinkInputReq struct {
 	Command        string
 	SinkInputIndex uint32
 	SinkName       string
+}
+
+type DetectedChanges struct {
+	defaultSinkChanged,
+	activeProfileChanged,
+	defaultSourceChanged,
+	sinksChanged,
+	sinkInputsChanged,
+	clientsChanged,
+	cardsChanged,
+	sourcesChanged bool
+}
+
+func (d DetectedChanges) String2() string {
+	return fmt.Sprintf(
+		"DetectedChanges{defaultSinkChanged: %v, activeProfileChanged: %v, defaultSourceChanged: %v, sinksChanged: %v, sinkInputsChanged: %v, clientsChanged: %v, cardsChanged: %v, sourcesChanged: %v}",
+		d.defaultSinkChanged,
+		d.activeProfileChanged,
+		d.defaultSourceChanged,
+		d.sinksChanged,
+		d.sinkInputsChanged,
+		d.clientsChanged,
+		d.cardsChanged,
+		d.sourcesChanged,
+	)
+}
+
+func (d DetectedChanges) AnyChanged() bool {
+	return d.defaultSinkChanged ||
+		d.activeProfileChanged ||
+		d.defaultSourceChanged ||
+		d.sinksChanged ||
+		d.sinkInputsChanged ||
+		d.clientsChanged ||
+		d.cardsChanged ||
+		d.sourcesChanged
 }
 
 func CreatePulseClient(pulseServer string) (*PulseClient, error) {
@@ -290,16 +329,24 @@ func (bridge *PulseaudioMQTTBridge) PublishMQTT(subtopic string, message string,
 
 func (bridge *PulseaudioMQTTBridge) MainLoop() {
 
-	ch := make(chan struct{}, 1)
+	eventChannels := map[proto.SubscriptionEventType]chan proto.SubscriptionEventType{
+		proto.EventChange: make(chan proto.SubscriptionEventType, 1),
+		proto.EventNew:    make(chan proto.SubscriptionEventType, 1),
+		proto.EventRemove: make(chan proto.SubscriptionEventType, 1),
+	}
+
 	bridge.PulseClient.protoClient.Callback = func(msg interface{}) {
+
 		switch msg := msg.(type) {
 		case *proto.SubscribeEvent:
-			if msg.Event.GetType() == proto.EventChange {
+			if ch, ok := eventChannels[msg.Event.GetType()]; ok {
 				select {
-				case ch <- struct{}{}:
+				case ch <- msg.Event:
 				default:
 				}
 			}
+		default:
+			slog.Info("Pulse unknown event received", "evt", msg)
 		}
 	}
 
@@ -311,76 +358,147 @@ func (bridge *PulseaudioMQTTBridge) MainLoop() {
 
 	go func() {
 		for {
-			<-ch
-			defaultSinkChanged, err := bridge.checkUpdateDefaultSink()
-			if err != nil {
-				slog.Error("Error when checking update of default sink", "error", err)
-				continue
-			}
-			defaultSourceChanged, err := bridge.checkUpdateDefaultSource()
-			if err != nil {
-				slog.Error("Error when checking update of default source", "error", err)
-				continue
-			}
-			activeProfileChanged, err := bridge.checkUpdateActiveProfile()
-			if err != nil {
-				slog.Error("Error when checking update of active profile", "error", err)
-				continue
-			}
-			sinksChanged, err := bridge.checkUpdateSinks()
-			if err != nil {
-				slog.Error("Error when checking update of sinks", "error", err)
-				continue
-			}
-			sinkInputsChanged, err := bridge.checkUpdateSinkInputs()
-			if err != nil {
-				slog.Error("Error when checking update of sink inputs", "error", err)
-				continue
-			}
-			clientsChanged, err := bridge.checkUpdateClients()
-			if err != nil {
-				slog.Error("Error when checking update of sink inputs", "error", err)
-				continue
-			}
-			sourcesChanged, err := bridge.checkUpdateSources()
-			if err != nil {
-				slog.Error("Error when checking update of sources", "error", err)
-				continue
-			}
+			select {
+			case event := <-eventChannels[proto.EventNew]:
+				slog.Debug("Event new", "event", event)
+			case event := <-eventChannels[proto.EventRemove]:
+				slog.Debug("Event remove", "event", event)
+			case event := <-eventChannels[proto.EventChange]:
+				slog.Info("Event change", "event", event)
 
-			//check update list of sinks or list of sources
-			if defaultSinkChanged || activeProfileChanged || defaultSourceChanged ||
-				sinksChanged || sinkInputsChanged || clientsChanged || sourcesChanged {
+				var err error
+				c := DetectedChanges{}
 
-				slog.Debug("State change detected",
-					"defaultSinkChanged", defaultSinkChanged,
-					"defaultSourceChanged", defaultSourceChanged,
-					"activeProfileChanged", activeProfileChanged,
-					"sinksChanged", sinksChanged,
-					"sourcesChanged", sourcesChanged)
+				switch event.GetFacility() {
+				case proto.EventSink:
+					c.defaultSinkChanged, err = bridge.checkUpdateDefaultSink()
+					c.sinksChanged, err = bridge.checkUpdateSinks()
+				case proto.EventSource:
+					c.defaultSourceChanged, err = bridge.checkUpdateDefaultSource()
+					c.activeProfileChanged, err = bridge.checkUpdateActiveProfile()
+					c.sourcesChanged, err = bridge.checkUpdateSources()
+				case proto.EventSinkSinkInput:
+					c.defaultSinkChanged, err = bridge.checkUpdateDefaultSink()
+					c.sinkInputsChanged, err = bridge.checkUpdateSinkInputs()
+				case proto.EventClient:
+					c.clientsChanged, err = bridge.checkUpdateClients()
+				case proto.EventCard:
+					c.cardsChanged, err = bridge.checkUpdateActiveProfile()
+				case proto.EventSinkSourceOutput:
+				case proto.EventModule:
+				case proto.EventServer:
+				}
 
-				bridge.publishState()
+				if err != nil {
+					slog.Error("Error when checking event", "error", err, "event", event)
+					continue
+				}
+
+				slog.Info("Change detection outcome",
+					"changeDetection", c)
+
+				if c.AnyChanged() {
+					slog.Info("State change detected")
+					bridge.publishState()
+				} else {
+					slog.Info("No state change detected")
+				}
 			}
 		}
 	}()
 }
 
 func (bridge *PulseaudioMQTTBridge) publishState() {
+	bridge.publishStateGranular(DetectedChanges{
+		defaultSinkChanged:   true,
+		activeProfileChanged: true,
+		defaultSourceChanged: true,
+		sinksChanged:         true,
+		sinkInputsChanged:    true,
+		clientsChanged:       true,
+		cardsChanged:         true,
+		sourcesChanged:       true,
+	})
+}
+
+func (bridge *PulseaudioMQTTBridge) publishStateGranular(c DetectedChanges) {
 	jsonState, err := json.Marshal(bridge.PulseAudioState)
 	if err != nil {
 		slog.Error("Could not serialize state", "error", err)
 		return
 	}
+	//TODO remove?
 	bridge.PublishMQTT("pulseaudio/state", string(jsonState), false)
 
-	// jsonState, err = json.Marshal(bridge.PulseAudioState.Clients)
-	// bridge.PublishMQTT("pulseaudio/clients", string(jsonState), false)
+	if c.defaultSinkChanged || c.sinkInputsChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.DefaultSink)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/defaultsink", string(jsonState), false)
+	}
 
-	// jsonState, err = json.Marshal(bridge.PulseAudioState.SinkInputs)
-	// bridge.PublishMQTT("pulseaudio/sinkinputs", string(jsonState), false)
+	if c.defaultSourceChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.DefaultSource)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/defaultsource", string(jsonState), false)
+	}
 
-	// jsonState, err = json.Marshal(bridge.PulseAudioState.Sinks)
-	// bridge.PublishMQTT("pulseaudio/sinks", string(jsonState), false)
+	if c.activeProfileChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.ActiveProfilePerCard)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/activeprofilepercard", string(jsonState), false)
+	}
+
+	if c.clientsChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.Clients)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/clients", string(jsonState), false)
+	}
+
+	if c.sinkInputsChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.SinkInputs)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/sinkinputs", string(jsonState), false)
+	}
+
+	if c.sinksChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.Sinks)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/sinks", string(jsonState), false)
+	}
+	if c.sourcesChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.Sources)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/sources", string(jsonState), false)
+	}
+	if c.cardsChanged {
+		jsonState, err = json.Marshal(bridge.PulseAudioState.Cards)
+		if err != nil {
+			slog.Error("Could not serialize state", "error", err)
+			return
+		}
+		bridge.PublishMQTT("pulseaudio/cards", string(jsonState), false)
+	}
 }
 
 func (bridge *PulseaudioMQTTBridge) checkUpdateSources() (bool, error) {
@@ -452,6 +570,7 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateSinkInputs() (bool, error) {
 			ClientIndex:    sinkInput.info.ClientIndex,
 			SinkInputIndex: sinkInput.info.SinkInputIndex,
 			SinkIndex:      sinkInput.info.SinkIndex,
+			Mute:           sinkInput.info.Muted,
 			Properties:     props})
 	}
 
@@ -533,29 +652,6 @@ func (bridge *PulseaudioMQTTBridge) checkUpdateDefaultSink() (bool, error) {
 	}
 	return changeDetected, nil
 }
-
-// func (bridge *PulseaudioMQTTBridge) checkUpdateSinksNew() (bool, error) {
-// 	reply := proto.GetSinkInfoListReply{}
-// 	err := bridge.PulseClient.protoClient.Request(&proto.GetSinkInfoList{}, &reply)
-// 	if err != nil {
-// 		slog.Error("Could not retrieve sink list", "error", err)
-// 		return false, err
-// 	}
-
-// 	changeDetected := false
-// 	sinks := make([]PulseAudioSink, 0)
-// 	for _, sinkInfo := range reply {
-
-// 		sink := PulseAudioSink{}
-// 		sink.Name = sinkInfo.Device
-// 		sink.Id = sinkInfo.SinkName
-// 		sink.State = sinkInfo.State
-// 		sink.Mute = sinkInfo.Mute
-// 		sinks = append(sinks, sink)
-// 	}
-// 	bridge.PulseAudioState.Sinks = sinks
-// 	return changeDetected, nil
-// }
 
 func (bridge *PulseaudioMQTTBridge) checkUpdateActiveProfile() (bool, error) {
 	reply := proto.GetCardInfoListReply{}
